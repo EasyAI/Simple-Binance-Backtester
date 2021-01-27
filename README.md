@@ -3,6 +3,9 @@
 ## Description
 This repository holds code created for a simple back tester that can be used to test strategies over historic candles, You will also be able to export the tested strategy into the Simple-Binance-Trader for real-time testing.
 
+### NOTE
+This backtester is used to easily create/test stratergies that can then easily be migrated over to the trader part of this tool: https://github.com/EasyAI/Simple-Binance-Trader
+
 ### Repository Contains:
 TO-DO
   
