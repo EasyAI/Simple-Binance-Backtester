@@ -1,0 +1,5 @@
+numpy
+requests
+flask
+"flask-socketio==4.3.2"
+websocket-client
