@@ -13,9 +13,9 @@ def technical_indicators(candles):
     indicators.update({'macd':TI.get_MACD(close_prices)})
     indicators.update({'boll':TI.get_BOLL(close_prices, ma_type=21, stDev=2)})
 
-    #indicators.update({'ema':{}})
-    #indicators['ema'].update({'ema50':TI.get_EMA(close_prices, 50)})
-    #indicators['ema'].update({'ema25':TI.get_EMA(close_prices, 25)})
+    indicators.update({'ema':{}})
+    indicators['ema'].update({'ema50':TI.get_EMA(close_prices, 50)})
+    indicators['ema'].update({'ema25':TI.get_EMA(close_prices, 25)})
 
     return(indicators)
 
@@ -34,7 +34,7 @@ def custom_condition(custom_conditional_data, position_information, previous_tra
 def check_buy_condition(custom_conditional_data, trade_information, indicators, prices, candles, symbol):
     macd = indicators['macd']
 
-    if macd[0]['macd'] < macd[1]['macd'] and macd[1]['hist'] < macd[0]['hist']:
+    if macd[0]['macd'] < macd[1]['macd'] and macd[0]['signal'] > macd[0]['macd']:
         sell_price = candles[0][4]
         return(sell_price)
     return
@@ -43,7 +43,7 @@ def check_buy_condition(custom_conditional_data, trade_information, indicators, 
 def check_sell_condition(custom_conditional_data, trade_information, indicators, prices, candles, symbol):
     macd = indicators['macd']
     
-    if macd[0]['macd'] > macd[1]['macd'] and macd[1]['hist'] > macd[0]['hist']:
+    if macd[0]['macd'] > macd[1]['macd'] and macd[0]['signal'] < macd[0]['macd']:
         buy_price = candles[0][4]
         return(buy_price)
     return
