@@ -18,6 +18,8 @@ function draw_chart(chartingData){
 
     var candleData = chartingData["candleData"];
 
+    console.log(chartingData);
+
     var list_of_ema144 = [];
     var list_of_ema2584 = [];
     var list_of_Data = [];
@@ -55,7 +57,7 @@ function draw_chart(chartingData){
         markers: {
             size: []
         },
-        colors: [],
+        //colors: [],
         stroke: {
             width: []
         },
@@ -106,7 +108,7 @@ function draw_chart(chartingData){
         });
         base_candle_chart_configuration["markers"]["size"].push(8, 8);
         base_candle_chart_configuration["stroke"]["width"].push(0,0);
-        base_candle_chart_configuration.colors.push('#12C500', '#D24300');
+        //base_candle_chart_configuration.colors.push('#12C500', '#D24300');
         base_candle_chart_configuration["tooltip"]["custom"].push(
             function({seriesIndex, dataPointIndex, w}) {
                 return w.globals.series[seriesIndex][dataPointIndex]
@@ -117,44 +119,28 @@ function draw_chart(chartingData){
         );
     }
 
-    // Add the boll bands to the existing candles chart.
     if ("boll" in indicators) {
-        console.log("Adding boll1");
-        build_indicator_boll(base_candle_chart_configuration, indicators["boll1"]);
+        build_mulit_line_indicator(base_candle_chart_configuration, indicators["boll"]);
     }
 
     // Add SMA indicators to the existing candles.
     if ("sma" in indicators) {
-        console.log("adding EMA");
+        console.log("adding SMA");
 
-        base_candle_chart_configuration["series"].push({
-            name: 'SMA',
-            type: 'line',
-            data: boll_T
-        });
-        base_candle_chart_configuration["stroke"]["width"].push(1);
-        base_candle_chart_configuration["markers"]["size"].push(0);
-        base_candle_chart_configuration["tooltip"]["custom"].push(function({seriesIndex, dataPointIndex, w}) {
-                return w.globals.series[seriesIndex][dataPointIndex]
-            }
-        );
+        for (var sma_type in indicators['sma']) {
+            build_single_line_indicator(base_candle_chart_configuration, indicators['sma'][sma_type], sma_type)
+        }
+
     }
 
     // Add EMA indicators to the existing candles.
     if ("ema" in indicators) {
-        console.log("adding SMA");
+        console.log("adding EMA");
 
-        base_candle_chart_configuration["series"].push({
-            name: 'EMA',
-            type: 'line',
-            data: boll_T
-        });
-        base_candle_chart_configuration["stroke"]["width"].push(1);
-        base_candle_chart_configuration["markers"]["size"].push(0);
-        base_candle_chart_configuration["tooltip"]["custom"].push(function({seriesIndex, dataPointIndex, w}) {
-                return w.globals.series[seriesIndex][dataPointIndex]
-            }
-        );
+        for (var sma_type in indicators['ema']) {
+            build_single_line_indicator(base_candle_chart_configuration, indicators['ema'][sma_type], sma_type)
+        }
+
     }
 
     // Finally add the candle to the displayed chart.
@@ -246,107 +232,83 @@ function draw_chart(chartingData){
         }
     }, indicators["macd"])).render();
 
-    new ApexCharts(document.querySelector("#stoch_chart"), build_indicator_stoch({
-        series: [],
-        chart: {
-            height: 350,
-            id: 'stoch_chart',
-            group:'indicators-link-charts',
-            type: 'line'
-        },
-        title: {
-            text: 'Stochastic RSI',
-            align: 'left'
-        },
-        fill: {
-            type:'solid',
-        },
-        markers: {
-            size: []
-        },
-        stroke: {
-            width: [2]
-        },
-        tooltip: {
-            shared: true,
-        },
-        xaxis: {
-            type: 'datetime'
-        },
-        yaxis: {
-            labels: {
-                minWidth: 40,
-                formatter: function (value) { return Math.round(value); }
-            },
-            max: function(value) { return 100; },
-            min: function(value) { return 0; }
-        }
-    }, indicators["stoch"])).render();
+    /*new ApexCharts(document.querySelector("#stoch_chart"), build_indicator_stoch()).render();*/
 
     candle_chart.render()
-    console.log(list_of_Data)
     candle_chart.zoomX(list_of_Data[150]['x'].getTime(), list_of_Data[0]['x'].getTime());
 
 }
 
 
-function build_indicator_boll(chart_obj, boll_data) {
-    // Function used to add the boll indicator to a passed chart.
-    var boll_T = [];
-    var boll_M = [];
-    var boll_B = [];
+function build_single_line_indicator(chart_obj, ind_obj, ind_name) {
+    var indicator_lines = [];
+    
+    for (var timestamp in ind_obj) {
+        current_line = ind_obj[timestamp]
 
-    for (var timestamp in boll_data) {
-        current_band = boll_data[timestamp]
-
-        boll_T.push({
+        indicator_lines.push({
             x: new Date(parseInt(timestamp)),
-            y: boll_data[timestamp]["T"].toFixed(8),
-        });
-        boll_M.push({
-            x: new Date(parseInt(timestamp)),
-            y: boll_data[timestamp]["M"].toFixed(8),
-        });
-        boll_B.push({
-            x: new Date(parseInt(timestamp)),
-            y: boll_data[timestamp]["B"].toFixed(8),
+            y: current_line.toFixed(8)
         });
     }
 
     chart_obj["series"].push({
-        name: 'Top',
+        name: ind_name,
         type: 'line',
-        data: boll_T
-    }, {
-        name: 'Middle',
-        type: 'line',
-        data: boll_M
-    }, {
-        name: 'Bottom',
-        type: 'line',
-        data: boll_B
-    });
-    chart_obj["stroke"]["width"].push(1.8,1.8,1.8);
-    chart_obj["markers"]["size"].push(0,0,0);
+        data: indicator_lines});
+
+    chart_obj["stroke"]["width"].push(2);
+    chart_obj["markers"]["size"].push(0);
+
     chart_obj["tooltip"]["custom"].push(
         function({seriesIndex, dataPointIndex, w}) {
             return w.globals.series[seriesIndex][dataPointIndex]
-        },
-        function({seriesIndex, dataPointIndex, w}) {
-            return w.globals.series[seriesIndex][dataPointIndex]
-        },
-        function({seriesIndex, dataPointIndex, w}) {
-            return w.globals.series[seriesIndex][dataPointIndex]
-        }
-    );
-    if (current_boll == 0){
-        chart_obj.colors.push('#000079', '#0000FF', '#000079');
-        current_boll += 1;
-    } else {
-        chart_obj.colors.push('#874900', '#F28400', '#874900');
-        current_boll = 0;
-    }
+    });
+
+    return(chart_obj);
+}
+
+
+function build_mulit_line_indicator(chart_obj, ind_obj) {
+    console.log(ind_obj);
+
+    var indicator_lines = [];
+    var keys = []
     
+    for (var timestamp in ind_obj) {
+        current_set = ind_obj[timestamp]
+
+        for (var sub_ind in current_set) {
+
+            if (!keys.includes(sub_ind)) {
+                keys.push(sub_ind)
+                indicator_lines[sub_ind] = []
+            }
+
+            indicator_lines[sub_ind].push({
+                x: new Date(parseInt(timestamp)),
+                y: ind_obj[timestamp][sub_ind].toFixed(8)
+            });
+        }
+    }
+
+    var ind_series = [];
+    for (var sub_ind_name in indicator_lines) {
+
+        chart_obj["series"].push({
+            name: sub_ind_name,
+            type: 'line',
+            data: indicator_lines[sub_ind_name]});
+
+        chart_obj["stroke"]["width"].push(2);
+        chart_obj["markers"]["size"].push(0);
+        
+        chart_obj["tooltip"]["custom"].push(
+            function({seriesIndex, dataPointIndex, w}) {
+                return w.globals.series[seriesIndex][dataPointIndex]
+        });
+
+    }
     return(chart_obj);
 }
 
@@ -387,41 +349,8 @@ function build_indicator_macd(chart_obj, macd_data) {
         type: 'bar',
         data: macd_hist
     });
-    chart_obj["stroke"]["width"].push(2,2,1);
-    chart_obj["markers"]["size"].push(0,0,0);
-    return(chart_obj);
-}
-
-
-function build_indicator_stoch(chart_obj, stock_data) {
-    // Function used to build the macd indicator to a passed chart.
-    var stoch_k = [];
-    var stoch_d = [];
-
-    for (var timestamp in stock_data) {
-        current_band = stock_data[timestamp]
-
-        stoch_k.push({
-            x: new Date(parseInt(timestamp)),
-            y: stock_data[timestamp]["%K"].toFixed(8),
-        });
-        stoch_d.push({
-            x: new Date(parseInt(timestamp)),
-            y: stock_data[timestamp]["%D"].toFixed(8),
-        });
-    }
-
-    chart_obj["series"].push({
-        name: 'K',
-        type: 'line',
-        data: stoch_k
-    }, {
-        name: 'D',
-        type: 'line',
-        data: stoch_d
-    });
-    chart_obj["stroke"]["width"].push(2,2);
-    chart_obj["markers"]["size"].push(0,0);
+    console.log('MACD');
+    console.log(chart_obj["series"]);
     return(chart_obj);
 }
 
