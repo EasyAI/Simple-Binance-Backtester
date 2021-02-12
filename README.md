@@ -26,7 +26,14 @@ example: python run.py pull -s "EUR-BTC" -i 5m -l 100000
 
 Then to run the test use:
   python run.py test -ds \[FILE_NAME\] -l \[CANDLE_LIMIT\]
-example: python run.py test -ds "candles_1m_BTCEUR.json" -l 10000
+example: python run.py test -ds "candles_5m_BTCEUR.json" -l 10000
+
+To run on live data you can use the following:
+  python run.py test -ds live -i \[INTERVAL\] -s \[SYMBOL\] -l \[CANDLE_LIMIT\]
+example: python run.py test -ds live -i 1m -s BTC-LTC -l 1000
+
+
+
 
 Then navigate to the web ui and it should load a chart showing buy/sell points in a visual display however this does need some work.
 
