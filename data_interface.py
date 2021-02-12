@@ -261,8 +261,6 @@ class live_data_interface(object):
     def get_candle_data_all(self):
         '''returns all of the candles'''
         dash_index = self.symbol.index('-')
-        print(dash_index)
-        print()
         shortSymbole = self.symbol[dash_index+1:]+self.symbol[:dash_index]
         return(self.socket_api.get_live_candles()[shortSymbole])
 

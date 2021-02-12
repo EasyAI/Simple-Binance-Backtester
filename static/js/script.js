@@ -1,6 +1,12 @@
+const MAIN_CHART_INDICATORS = ['ichi', 'rma', 'ema', 'sma', 'boll'];
 
+const socket = io('http://127.0.0.1:5000');
 const request = new XMLHttpRequest();
-var candle_data = [];
+
+var main_inds = document.getElementById("charts_display_panel");
+let candle_data = [];
+let indicator_data = [];
+let complete_orders = [];
 
 window.Apex = {
     chart: {
@@ -9,40 +15,76 @@ window.Apex = {
         }
     },
     autoScaleYaxis: false
-}
+};
 
 var current_boll = 0;
 
 
-function draw_chart(chartingData){
+socket.on('update_data', function(data) {
+    var charting_data   = data['data'];
+    candle_data         = charting_data['candleData'];
+    indicator_data      = charting_data['indicators'];
+    complete_orders     = charting_data['orders'];
 
-    var candleData = chartingData["candleData"];
+    draw_charts();
+});
 
-    console.log(chartingData);
 
-    var list_of_ema144 = [];
-    var list_of_ema2584 = [];
+function setup(charting_data) {
+    candle_data         = charting_data['candleData'];
+    indicator_data      = charting_data['indicators'];
+    complete_orders     = charting_data['orders'];
+
+    // Add main chart candles
+    var mc = document.createElement('div');
+    mc.setAttribute("id", "candles_chart");
+    main_inds.append(mc)
+
+    // Add main chart volumes.
+    var mc = document.createElement('div');
+    mc.setAttribute("id", "volumes_chart");
+    main_inds.append(mc)
+
+    add_chart_ids(indicator_data);
+
+    draw_charts();
+}
+
+
+function draw_charts() {
+
     var list_of_Data = [];
     var volume_chart = [];
 
-    for (i=0;i<candleData.length;i++) {
+    // Add main chart candles
+    var mc = document.createElement('div');
+    mc.setAttribute("id", "candles_chart");
+    main_inds.append(mc)
+
+    // Add main chart volumes.
+    var mc = document.createElement('div');
+    mc.setAttribute("id", "volumes_chart");
+    main_inds.append(mc)
+
+
+    for (i=0;i<candle_data.length;i++) {
         list_of_Data.push({
-            x: new Date(candleData[i][0]),
+            x: new Date(candle_data[i][0]),
             y: [
-                candleData[i][1],
-                candleData[i][2],
-                candleData[i][3],
-                candleData[i][4]
+                candle_data[i][1],
+                candle_data[i][2],
+                candle_data[i][3],
+                candle_data[i][4]
             ]
         });
 
         volume_chart.push({
-            x: new Date(candleData[i][0]),
-            y: Math.round(candleData[i][5])
+            x: new Date(candle_data[i][0]),
+            y: Math.round(candle_data[i][5])
         });
     }
 
-    // Build skelatal chart.
+    // Chart template for main chart.
     var base_candle_chart_configuration = {
         series: [],
         chart: {
@@ -75,24 +117,59 @@ function draw_chart(chartingData){
         }
     };
 
-    // Add the placed orders onto a chart.
-    if (chartingData["orders"]!=null) {
 
-        var orders = chartingData["orders"];
-        var indicators = chartingData["indicators"];
+    // Chart template for indicators
+    var base_indicator_chart_configuration = {
+        series: [],
+        chart: {
+            height: 350,
+            id: 'chart',
+            group:'indicators-link-charts',
+            type: 'line'
+        },
+        title: {
+            text: 'Chart',
+            align: 'left'
+        },
+        fill: {
+            type:'solid',
+        },
+        markers: {
+            size: []
+        },
+        stroke: {
+            width: []
+        },
+        tooltip: {
+            shared: true
+        },
+        xaxis: {
+            type: 'datetime'
+        },
+        yaxis: {
+            labels: {
+                minWidth: 40,
+                formatter: function (value) { return Math.round(value); }
+            }
+        }
+    };
+
+
+    // Add the placed orders onto a chart.
+    if (complete_orders!=null) {
         var b_orders = [];
         var s_orders = [];
 
-        for (i=0;i<orders.length;i++) {
-            if (orders[i][2] == "buy") {
+        for (i=0;i<complete_orders.length;i++) {
+            if (complete_orders[i][2] == "buy") {
                 b_orders.push({
-                    x: orders[i][0],
-                    y: orders[i][1]
+                    x: complete_orders[i][0],
+                    y: complete_orders[i][1]
                 });
             } else {
                 s_orders.push({
-                    x: orders[i][0],
-                    y: orders[i][1]
+                    x: complete_orders[i][0],
+                    y: complete_orders[i][1]
                 });
             }
         }
@@ -119,28 +196,35 @@ function draw_chart(chartingData){
         );
     }
 
-    if ("boll" in indicators) {
-        build_mulit_line_indicator(base_candle_chart_configuration, indicators["boll"]);
+    // Add BOLL indicators to the existing main chart.
+    if ("boll" in indicator_data) {
+        build_mulit_line_indicator(base_candle_chart_configuration, indicator_data["boll"]);
     }
 
-    // Add SMA indicators to the existing candles.
-    if ("sma" in indicators) {
-        console.log("adding SMA");
-
-        for (var sma_type in indicators['sma']) {
-            build_single_line_indicator(base_candle_chart_configuration, indicators['sma'][sma_type], sma_type)
-        }
-
+    // Add Ichimoku indicators to the existing main chart.
+    if ('ichi' in indicator_data) {
+        build_mulit_line_indicator(base_candle_chart_configuration, indicator_data["ichi"]);
     }
 
-    // Add EMA indicators to the existing candles.
-    if ("ema" in indicators) {
-        console.log("adding EMA");
-
-        for (var sma_type in indicators['ema']) {
-            build_single_line_indicator(base_candle_chart_configuration, indicators['ema'][sma_type], sma_type)
+    // Add SMA indicators to the existing main chart.
+    if ("sma" in indicator_data) {
+        for (var sma_type in indicator_data['sma']) {
+            build_single_line_indicator(base_candle_chart_configuration, indicator_data['sma'][sma_type], sma_type)
         }
+    }
 
+    // Add EMA indicators to the existing main chart.
+    if ("ema" in indicator_data) {
+        for (var ema_type in indicator_data['ema']) {
+            build_single_line_indicator(base_candle_chart_configuration, indicator_data['ema'][ema_type], ema_type)
+        }
+    }
+
+    // Add RMA indicators to the existing main chart.
+    if ("rma" in indicator_data) {
+        for (var rma_type in indicator_data['rma']) {
+            build_single_line_indicator(base_candle_chart_configuration, indicator_data['rma'][rma_type], rma_type)
+        }
     }
 
     // Finally add the candle to the displayed chart.
@@ -197,50 +281,59 @@ function draw_chart(chartingData){
     }).render();
 
 
-    new ApexCharts(document.querySelector("#macd_chart"), build_indicator_macd({
-        series: [],
-        chart: {
-            height: 350,
-            id: 'macd_chart',
-            group:'indicators-link-charts',
-            type: 'line'
-        },
-        title: {
-            text: 'MACD Chart',
-            align: 'left'
-        },
-        fill: {
-            type:'solid',
-        },
-        markers: {
-            size: []
-        },
-        stroke: {
-            width: []
-        },
-        tooltip: {
-            shared: true,
-        },
-        xaxis: {
-            type: 'datetime'
-        },
-        yaxis: {
-            labels: {
-                minWidth: 40,
-                formatter: function (value) { return Math.round(value); }
-            }
-        }
-    }, indicators["macd"])).render();
+    // Add RSI indicators to the existing main chart.
+    if ('rsi' in indicator_data) {
+        new ApexCharts(document.querySelector("#rsi_chart"), build_single_line_indicator(JSON.parse(JSON.stringify(base_indicator_chart_configuration)), indicator_data["rsi"], 'rsi', 'RSI')).render();
+    }
 
-    /*new ApexCharts(document.querySelector("#stoch_chart"), build_indicator_stoch()).render();*/
+    // Add MACD indicators to the existing main chart.
+    if ('macd' in indicator_data) {
+        new ApexCharts(document.querySelector("#macd_chart"), build_indicator_macd(JSON.parse(JSON.stringify(base_indicator_chart_configuration)), indicator_data["macd"], 'MACD')).render();
+    }
+
+    // Add ZeroLag MACD indicators to the existing main chart.
+    if ('zerolagmacd' in indicator_data) {
+        new ApexCharts(document.querySelector("#zerolagmacd_chart"), build_indicator_macd(JSON.parse(JSON.stringify(base_indicator_chart_configuration)), indicator_data["zerolagmacd"], 'ZeroLag MACD')).render();
+    }
+
+    // Add Stochastics RSI indicators to the existing main chart.
+    if ('stock' in indicator_data) {
+        new ApexCharts(document.querySelector("#stock_chart"), build_mulit_line_indicator(JSON.parse(JSON.stringify(base_indicator_chart_configuration)), indicator_data["stock"], 'Stochastics RSI')).render();
+    }
+
+    // Add ADX indicators to the existing main chart.
+    if ('adx' in indicator_data) {
+        new ApexCharts(document.querySelector("#adx_chart"), build_mulit_line_indicator(JSON.parse(JSON.stringify(base_indicator_chart_configuration)), indicator_data["adx"], 'ADX')).render();
+    }
+
+    // Add CCI indicators to the existing main chart.
+    if ('cci' in indicator_data) {
+        new ApexCharts(document.querySelector("#cci_chart"), build_single_line_indicator(JSON.parse(JSON.stringify(base_indicator_chart_configuration)), indicator_data["cci"], 'cci', 'CCI')).render();
+    }
+
+    // Add MFI indicators to the existing main chart.
+    if ('mfi' in indicator_data) {
+        new ApexCharts(document.querySelector("#mfi_chart"), build_single_line_indicator(JSON.parse(JSON.stringify(base_indicator_chart_configuration)), indicator_data["mfi"], 'mfi', 'MFI')).render();
+    }
 
     candle_chart.render()
     candle_chart.zoomX(list_of_Data[150]['x'].getTime(), list_of_Data[0]['x'].getTime());
-
 }
 
 
-function build_single_line_indicator(chart_obj, ind_obj, ind_name) {
+function add_chart_ids(ind_obj) {
+    for (var key in ind_obj) {
+        if (!(key in MAIN_CHART_INDICATORS)) {
+            console.log(`${key}_chart`);
+            var mc = document.createElement('div');
+            mc.setAttribute("id", `${key}_chart`);
+            main_inds.append(mc)
+        }
+    }
+}
+
+
+function build_single_line_indicator(chart_obj, ind_obj, line_name, ind_name=null) {
     var indicator_lines = [];
     
     for (var timestamp in ind_obj) {
@@ -253,7 +346,7 @@ function build_single_line_indicator(chart_obj, ind_obj, ind_name) {
     }
 
     chart_obj["series"].push({
-        name: ind_name,
+        name: line_name,
         type: 'line',
         data: indicator_lines});
 
@@ -265,12 +358,16 @@ function build_single_line_indicator(chart_obj, ind_obj, ind_name) {
             return w.globals.series[seriesIndex][dataPointIndex]
     });
 
+    if (!(ind_name == null)) {
+        chart_obj['chart']['id'] = `${ind_name}_chart`
+        chart_obj['title']['text'] = ind_name
+    }
+
     return(chart_obj);
 }
 
 
-function build_mulit_line_indicator(chart_obj, ind_obj) {
-    console.log(ind_obj);
+function build_mulit_line_indicator(chart_obj, ind_obj, ind_name=null) {
 
     var indicator_lines = [];
     var keys = []
@@ -279,12 +376,10 @@ function build_mulit_line_indicator(chart_obj, ind_obj) {
         current_set = ind_obj[timestamp]
 
         for (var sub_ind in current_set) {
-
             if (!keys.includes(sub_ind)) {
                 keys.push(sub_ind)
                 indicator_lines[sub_ind] = []
             }
-
             indicator_lines[sub_ind].push({
                 x: new Date(parseInt(timestamp)),
                 y: ind_obj[timestamp][sub_ind].toFixed(8)
@@ -302,18 +397,19 @@ function build_mulit_line_indicator(chart_obj, ind_obj) {
 
         chart_obj["stroke"]["width"].push(2);
         chart_obj["markers"]["size"].push(0);
-        
-        chart_obj["tooltip"]["custom"].push(
-            function({seriesIndex, dataPointIndex, w}) {
-                return w.globals.series[seriesIndex][dataPointIndex]
-        });
 
     }
+
+    if (!(ind_name == null)) {
+        chart_obj['chart']['id'] = `${ind_name}_chart`
+        chart_obj['title']['text'] = ind_name
+    }
+
     return(chart_obj);
 }
 
 
-function build_indicator_macd(chart_obj, macd_data) {
+function build_indicator_macd(chart_obj, macd_data, ind_name) {
     // Function used to build the macd indicator to a passed chart.
     var macd_signal = [];
     var macd_macd = [];
@@ -349,15 +445,16 @@ function build_indicator_macd(chart_obj, macd_data) {
         type: 'bar',
         data: macd_hist
     });
-    console.log('MACD');
-    console.log(chart_obj["series"]);
+
+    chart_obj['chart']['id'] = `${ind_name}_chart`
+    chart_obj['title']['text'] = ind_name
+
     return(chart_obj);
 }
 
 
 function pull_candles(){
-    console.log('Getting candles');
-    candle_data = rest_api('GET', 'get_trade_data');
+    rest_api('GET', 'get_trade_data');
 }
 
 
@@ -375,7 +472,7 @@ function rest_api(method, endpoint, data=null){
     request.onload = () => {
         if (request.status == 200){
           console.log(JSON.parse(request.response));
-          draw_chart(JSON.parse(request.response).data);
+          setup(JSON.parse(request.response).data);
         } else {
           console.log(`error ${request.status} ${request.statusText}`);
         }

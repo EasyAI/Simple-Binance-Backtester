@@ -14,6 +14,7 @@ import logging
 import threading
 from decimal import Decimal
 import trader_configuration as TC
+from flask_socketio import SocketIO
 from flask import Flask, render_template, url_for, request
 
 ## Binance API modules
@@ -24,15 +25,16 @@ import data_interface as DI
 import technical_indicators as TI
 
 
-APP = Flask(__name__)
+APP         = Flask(__name__)
+SOCKET_IO   = SocketIO(APP)
 
 
 ##
-DATA_INF    = None
+TS = None
 
 INVERT_FOR_BTC_FIAT = False
 
-IS_LIVE = False # Used to determin if active updates should be sent via socket.
+is_live = False # Used to determin if active updates should be sent via socket.
 IS_READ = False # Used to determin if a file is just being read to print trade results to web ui
 
 
@@ -57,27 +59,20 @@ def override_url_for():
 
 @APP.route('/', methods=['GET'])
 def control_panel():
+    if is_live:
+        web_updater_thread = threading.Thread(target=web_updater)
+        web_updater_thread.start()
+
     return(render_template('main_page.html'))
 
 
 @APP.route('/rest-api/v1/get_trade_data', methods=['GET'])
 def get_candles():
-    candleData = DATA_INF.get_candle_data_all()
 
-    indicators = TC.technical_indicators(candleData)
-
-    max_len = get_max_length(indicators)
-
-    candleData = candleData[:max_len]
-
-    ts_inds = timestamp_indicators(candleData, indicators)
-
-    # Used indicators to place orders/simulate conditional trades.
-    orders = test_orders(ts_inds, candleData)
+    orders = TS.orders
 
     positive = 0
     total = 0
-
     total_outcome = 0
 
     for index, order in enumerate(orders):
@@ -97,120 +92,206 @@ def get_candles():
     print(total_outcome)
     print('trades: '+str(positive)+'/'+str(total)+' '+str(prec)+'%')
 
-    return(json.dumps({'call':True, 'data':
-        {'candleData':candleData,
-        'indicators':ts_inds,
-        'orders':orders}}))
+    return(json.dumps({'call':True, 'type':'live' if is_live else 'once', 'data':
+        {'candleData':TS.candles,
+        'indicators':TS.indicators,
+        'orders':TS.orders}}))
 
 
-def build_empty_indicators(indicators):
-    base_inds = {ind_key:{} for ind_key in indicators.keys()}
+def web_updater():
+    lastHash = None
 
-    for ma in ['ema', 'sma']:
-        if ma in indicators.keys():
-            base_inds[ma].update({ind_key:{} for ind_key in indicators[ma].keys()})
+    while True:
+        SOCKET_IO.emit('update_data', {'data':
+            {'candleData':TS.candles,
+            'indicators':TS.indicators,
+            'orders':TS.orders}})
 
-    return(base_inds)
-
-
-def get_max_length(indicators):
-    get_ma_len = lambda ma_type : [len(indicators[ma_type][ind_key]) for ind_key in indicators[ma_type].keys()] if ma_type in indicators else [999999999]
-
-    base_ind_lens = [len(indicators[ind_key]) for ind_key in indicators.keys() if not ind_key in ['ema', 'sma']]
-
-    return(min(base_ind_lens+get_ma_len('ema')+get_ma_len('sma')))
+        time.sleep(5)
 
 
-def timestamp_indicators(candleData, indicators):
-    stampped_ind = build_empty_indicators(indicators)
+class trade_simulator():
 
-    # Loop to assign timestamps to each relevent indicator.
-    for index, candle in enumerate(candleData):
-        timestamp = candle[0] # Pull the timestamp for the indicators (open time is used).
-
-        for ind_key in indicators.keys():
-            if ind_key in ['ema', 'sma']:
-                for ma_type in indicators[ind_key]:
-                    stampped_ind[ind_key][ma_type].update({timestamp:indicators[ind_key][ma_type][index]})
-            else:
-                stampped_ind[ind_key].update({timestamp:indicators[ind_key][index]})
-
-    return(stampped_ind)
+    def __init__(self):
+        self.candles = []
+        self.indicators = []
+        self.orders = []
 
 
-def test_orders(indicators, candles):
+    def setup(self, is_live, data_source, symbol=None, interval=None, limit=None):
+        ## Setup the initial config for the trade simulator for either backtest of live test.
+        self.is_live = is_live
 
-    # Chunk of variables used to mimic the real trader to allow for easy exporting of the coinditions.
-    custom_conditional_data = {}
-    trade_information = {
-        'side':'buy',
-        'buy_price':0,
-        'market_status':'TRADING'}
-    orders = []
+        if is_live:
+            self.data_inf   = DI.live_data_interface(symbol=symbol, interval=interval, max_candles=int(limit))
+            self.data_inf.start()
 
-    # Get range to look over (subtract 1 as lists start at 0 not 1)
-    d_index = len(candles)-1
+            self.raw_indicators = []
+            self.required_offset_period = 0
 
-    # Set a lookback that is required if conditions look back several candles/indicators.
-    required_offset_period = 10
+        else:
+            with open('hist_data/{0}'.format(data_source), 'r') as file:
+                file_data   = json.load(file)
 
-    cInds = build_empty_indicators(indicators)
+            data_inf        = DI.hist_data_interface(file_data['data'][:int(limit)])
+            candleData      = data_inf.get_candle_data_all()
+            indicators      = TC.technical_indicators(candleData)
+            max_len         = self._get_max_length(indicators)
 
-    # Setup a list of just the timestamps to use as keys.
-    date_list = [candle[0] for candle in candles]
+            self.candles    = candleData[:max_len]
+            self.indicators = self._timestamp_indicators(self.candles, indicators)
 
-    run_test = False
-    start_time = time.time()
+            self.required_offset_period = 10
+            self.d_index    = max_len-1
 
-    for index in range(d_index):
-        print(index)
-        # Skip until the treshold has been reached.
-        if not(index > required_offset_period):
-            continue
+            # Setup a list of just the timestamps to use as keys.
+            self.date_list = [candle[0] for candle in self.candles]
 
-        # Get the current index of the historic data feed.
-        c_index = d_index-index
 
-        # Get the current timerange.
-        time_range = date_list[c_index:c_index+required_offset_period]
+    def start(self):
+        testRunner_th = threading.Thread(target=self._test_run)
+        testRunner_th.start()
 
-        # Get current candles data.
-        cCandles = candles[c_index:c_index+required_offset_period]
+        return(True)
 
-        for ind_key in indicators.keys():
-            if ind_key in ['ema', 'sma']:
-                for ma_type in cInds[ind_key]:
-                    cInds[ind_key].update({ma_type:[indicators[ind_key][ma_type][key] for key in indicators[ind_key][ma_type] if key in time_range]})
-            else: 
-                cInds.update({ind_key:[indicators[ind_key][key] for key in indicators[ind_key] if key in time_range]}) 
 
-        if run_test:
-            continue
+    def _build_empty_indicators(self, indicators):
+        base_inds = {ind_key:{} for ind_key in indicators.keys()}
 
-        if trade_information['market_status'] != "TRADING":
-            continue
+        for ma in ['ema', 'sma']:
+            if ma in indicators.keys():
+                base_inds[ma].update({ind_key:{} for ind_key in indicators[ma].keys()})
 
-        if trade_information['side'] == 'buy':
-            buy_results = TC.check_buy_condition(custom_conditional_data, trade_information, cInds, "PLACE_HOLDER", cCandles, "PLACE_HOLDER")
+        return(base_inds)
 
-            if buy_results:
-                orders.append([time_range[0], buy_results, 'buy'])
 
-            if len(orders) > 0:
-                if orders[-1][2] == 'buy':
-                    trade_information['side'] = 'sell'
+    def _get_max_length(self, indicators):
+        get_ma_len = lambda ma_type : [len(indicators[ma_type][ind_key]) for ind_key in indicators[ma_type].keys()] if ma_type in indicators else [999999999]
 
-        elif trade_information['side'] == 'sell':
-            sell_results = TC.check_sell_condition(custom_conditional_data, trade_information, cInds, "PLACE_HOLDER", cCandles, "PLACE_HOLDER")
+        base_ind_lens = [len(indicators[ind_key]) for ind_key in indicators.keys() if not ind_key in ['ema', 'sma']]
 
-            if sell_results:
-                orders.append([time_range[0], sell_results, 'sell'])
+        return(min(base_ind_lens+get_ma_len('ema')+get_ma_len('sma')))
 
-            if orders[-1][2] == 'sell':
-                trade_information['side'] = 'buy'
 
-    print('Runtime took: {0}'.format(time.time()-start_time))
-    return(orders)
+    def _timestamp_indicators(self, candleData, indicators):
+        stampped_ind = self._build_empty_indicators(indicators)
+
+        # Loop to assign timestamps to each relevent indicator.
+        for index, candle in enumerate(candleData):
+            timestamp = candle[0] # Pull the timestamp for the indicators (open time is used).
+
+            for ind_key in indicators.keys():
+                if ind_key in ['ema', 'sma']:
+                    for ma_type in indicators[ind_key]:
+                        stampped_ind[ind_key][ma_type].update({timestamp:indicators[ind_key][ma_type][index]})
+                else:
+
+                    stampped_ind[ind_key].update({timestamp:indicators[ind_key][index]})
+
+        return(stampped_ind)
+
+
+    def _test_run(self):
+        # Chunk of variables used to mimic the real trader to allow for easy exporting of the coinditions.
+        custom_conditional_data = {}
+        trade_information = {
+            'side':'buy',
+            'buy_price':0,
+            'market_status':'TRADING'}
+
+        run_test = False
+        start_time = time.time()
+
+        c_iter = -1
+
+        print('Started Back Tester...')
+        while True:
+            c_iter += 1
+
+            if not self.is_live:
+                print(c_iter)
+                if c_iter == self.d_index:
+                    break
+
+            # Skip until the treshold has been reached.
+            if not(c_iter > self.required_offset_period):
+                continue
+
+            # Get current candles data.
+            cCandles = self._update_candles(c_iter)
+            cInds = self._update_indicators(c_iter)
+
+            if run_test:
+                continue
+
+            if trade_information['market_status'] != "TRADING":
+                continue
+
+            if trade_information['side'] == 'buy':
+                buy_results = TC.check_buy_condition(custom_conditional_data, trade_information, cInds, "PLACE_HOLDER", cCandles, "PLACE_HOLDER")
+
+                if buy_results:
+                    self.orders.append([cCandles[0][0], buy_results, 'buy'])
+
+                if len(self.orders) > 0:
+                    if self.orders[-1][2] == 'buy':
+                        print('buy')
+                        trade_information['side'] = 'sell'
+
+            elif trade_information['side'] == 'sell':
+                sell_results = TC.check_sell_condition(custom_conditional_data, trade_information, cInds, "PLACE_HOLDER", cCandles, "PLACE_HOLDER")
+
+                if sell_results:
+                    self.orders.append([cCandles[0][0], sell_results, 'sell'])
+
+                if self.orders[-1][2] == 'sell':
+                    print('sell')
+                    trade_information['side'] = 'buy'
+
+        print('Runtime took: {0}'.format(time.time()-start_time))
+
+
+    def _update_candles(self, c_iter):
+        if self.is_live:
+            candleData          = self.data_inf.get_candle_data_all()
+            self.raw_indicators = TC.technical_indicators(candleData)
+            max_len             = self._get_max_length(self.raw_indicators)
+            current_candles     = candleData[:max_len]
+            self.candles        = current_candles
+        else:
+            c_index = self.d_index-c_iter
+            current_candles = self.candles[c_index:c_index+self.required_offset_period]
+
+        return(current_candles)
+
+
+    def _update_indicators(self, c_iter):
+        if self.is_live:
+            self.indicators = self._timestamp_indicators(self.candles, self.raw_indicators)
+
+            cInds = self._build_empty_indicators(self.indicators)
+
+            for ind_key in self.indicators.keys():
+                if ind_key in ['ema', 'sma']:
+                    for ma_type in cInds[ind_key]:
+                        cInds[ind_key].update({ma_type:[self.indicators[ind_key][ma_type][key] for key in self.indicators[ind_key][ma_type] if key in self.indicators[ind_key][ma_type].keys()]})
+                else: 
+                    cInds.update({ind_key:[self.indicators[ind_key][key] for key in self.indicators[ind_key] if key in self.indicators[ind_key].keys()]})
+
+        else:
+            c_index = self.d_index-c_iter
+            time_range = self.date_list[c_index:c_index+self.required_offset_period]
+
+            cInds = self._build_empty_indicators(self.indicators)
+
+            for ind_key in self.indicators.keys():
+                if ind_key in ['ema', 'sma']:
+                    for ma_type in cInds[ind_key]:
+                        cInds[ind_key].update({ma_type:[self.indicators[ind_key][ma_type][key] for key in self.indicators[ind_key][ma_type] if key in time_range]})
+                else: 
+                    cInds.update({ind_key:[self.indicators[ind_key][key] for key in self.indicators[ind_key] if key in time_range]}) 
+
+        return(cInds)
 
 
 def pull_data(symbol, interval, limit):
@@ -226,21 +307,6 @@ def pull_data(symbol, interval, limit):
     # Saved the candles
     with open('hist_data/candles_'+interval+'_'+symbol+'.json', 'w') as file:
         file_data = json.dump({'data':candles}, file)
-
-
-def startWeb(data_source, symbol=None, interval=None, limit=None):
-    global DATA_INF
-
-    if data_source != 'live':
-        with open('hist_data/{0}'.format(data_source), 'r') as file:
-            file_data = json.load(file)
-        DATA_INF = DI.hist_data_interface(file_data['data'][:int(limit)])
-
-    else:
-        DATA_INF = DI.live_data_interface(symbol=symbol, interval=interval, max_candles=int(limit))
-        DATA_INF.start()
-
-    APP.run(debug=True)
 
 
 if __name__ == '__main__':
@@ -264,11 +330,19 @@ if __name__ == '__main__':
         pull_data(params['s'], params['i'], params['l'])
 
     elif sys.argv[1].lower() == 'test':
+        TS = trade_simulator()
+
         if params['ds'] == 'live':
-            IS_LIVE = True
-            startWeb(params['ds'], symbol=params['s'], interval=params['i'], limit=params['l'])
+            is_live = True
+            TS.setup(is_live, params['ds'], symbol=params['s'], interval=params['i'], limit=params['l'])
         else:
-            startWeb(params['ds'], limit=params['l'])
+            TS.setup(is_live, params['ds'], limit=params['l'])
+        TS.start()
+        
+        SOCKET_IO.run(APP, 
+            debug=True, 
+            use_reloader=False)
+
 
     elif sys.argv[1].lower() == 'load':
         IS_READ = True
