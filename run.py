@@ -5,7 +5,9 @@ Botcore
 
 '''
 import os
+import csv
 import sys
+import copy
 import time
 import json
 import copy
@@ -36,6 +38,8 @@ INVERT_FOR_BTC_FIAT = False
 
 is_live = False # Used to determin if active updates should be sent via socket.
 IS_READ = False # Used to determin if a file is just being read to print trade results to web ui
+
+DOUBLE_DEPTH_INDICATORS = ['ema', 'sma']
 
 
 def dated_url_for(endpoint, **values):
@@ -71,30 +75,33 @@ def get_candles():
 
     orders = TS.orders
 
-    positive = 0
-    total = 0
-    total_outcome = 0
+    if len(orders) != 0:
+        overall = 0
+        num_pos = 0
+        num_neg = 0
+        total = int((len(orders) if len(orders) % 2 == 0 else len(orders)-1)/2)
+        for i in range(total):
+            c_order = orders[i*2]
+            n_order = orders[(i*2)+1]
 
-    for index, order in enumerate(orders):
-        if index != len(orders)-1:
-            if order[2] == 'buy':
-                outcome = orders[index+1][1] - order[1]
-                if outcome > 0:
-                    positive += 1
-                total_outcome += outcome
-                total += 1
+            if c_order[3].split('-')[1] == 'LONG':
+                outcome = n_order[1] - c_order[1]
+            elif c_order[3].split('-')[1] == 'SHORT':
+                outcome = c_order[1] - n_order[1]
 
-    prec = 0
-    if total != 0:
-        if positive != 0:
-            prec = (positive/total)*100
+            if outcome > 0:
+                num_pos += 1
+            else:
+                num_neg += 1
 
-    print(total_outcome)
-    print('trades: '+str(positive)+'/'+str(total)+' '+str(prec)+'%')
+            overall += outcome
+
+        print('Total trades: {0}, P/N: {1}/{2}, prec: {3:.2f}%'.format(num_neg+num_pos, num_pos, num_neg, num_pos if num_neg == 0 else (num_pos/(num_neg+num_pos))*100))
+        print('Total: {0}'.format(overall))
 
     return(json.dumps({'call':True, 'type':'live' if is_live else 'once', 'data':
-        {'candleData':TS.candles,
-        'indicators':TS.indicators,
+        {'candleData':TS.candles[:250],
+        'indicators':shorten_indicators(TS.indicators, 250),
         'orders':TS.orders}}))
 
 
@@ -102,12 +109,33 @@ def web_updater():
     lastHash = None
 
     while True:
+        short_candles = TS.candles[0:3]
+        short_indicators = shorten_indicators(TS.indicators)
+
         SOCKET_IO.emit('update_data', {'data':
-            {'candleData':TS.candles,
-            'indicators':TS.indicators,
+            {'candleData':short_candles,
+            'indicators':short_indicators,
             'orders':TS.orders}})
 
-        time.sleep(5)
+        time.sleep(10)
+
+
+def shorten_indicators(indicators, length=4):
+    short_indicators = {}
+
+    for ind in indicators.keys():
+        short_indicators.update({ind:{}})
+        if ind in DOUBLE_DEPTH_INDICATORS:
+            for sub_ind in indicators[ind]:
+                short_indicators[ind].update({sub_ind:{}})
+                key_time_values = sorted(indicators[ind].keys(), reverse=True)[:length]
+                short_indicators[ind][sub_ind] = {c_time:indicators[ind][sub_ind][c_time] for c_time in key_time_values}
+
+        key_time_values = sorted(indicators[ind].keys(), reverse=True)[:length]
+        short_indicators[ind] = {c_time:indicators[ind][c_time] for c_time in key_time_values}
+
+    return(short_indicators)
+
 
 
 class trade_simulator():
@@ -158,7 +186,7 @@ class trade_simulator():
     def _build_empty_indicators(self, indicators):
         base_inds = {ind_key:{} for ind_key in indicators.keys()}
 
-        for ma in ['ema', 'sma']:
+        for ma in DOUBLE_DEPTH_INDICATORS:
             if ma in indicators.keys():
                 base_inds[ma].update({ind_key:{} for ind_key in indicators[ma].keys()})
 
@@ -168,7 +196,7 @@ class trade_simulator():
     def _get_max_length(self, indicators):
         get_ma_len = lambda ma_type : [len(indicators[ma_type][ind_key]) for ind_key in indicators[ma_type].keys()] if ma_type in indicators else [999999999]
 
-        base_ind_lens = [len(indicators[ind_key]) for ind_key in indicators.keys() if not ind_key in ['ema', 'sma']]
+        base_ind_lens = [len(indicators[ind_key]) for ind_key in indicators.keys() if not ind_key in DOUBLE_DEPTH_INDICATORS]
 
         return(min(base_ind_lens+get_ma_len('ema')+get_ma_len('sma')))
 
@@ -181,7 +209,7 @@ class trade_simulator():
             timestamp = candle[0] # Pull the timestamp for the indicators (open time is used).
 
             for ind_key in indicators.keys():
-                if ind_key in ['ema', 'sma']:
+                if ind_key in DOUBLE_DEPTH_INDICATORS:
                     for ma_type in indicators[ind_key]:
                         stampped_ind[ind_key][ma_type].update({timestamp:indicators[ind_key][ma_type][index]})
                 else:
@@ -195,21 +223,21 @@ class trade_simulator():
         # Chunk of variables used to mimic the real trader to allow for easy exporting of the coinditions.
         custom_conditional_data = {}
         trade_information = {
-            'side':'buy',
+            'order_side':'BUY',
             'buy_price':0,
-            'market_status':'TRADING'}
+            'market_status':'TRADING',
+            'can_order':True}
 
         run_test = False
         start_time = time.time()
-
         c_iter = -1
+        t_type = 'LONG'
 
         print('Started Back Tester...')
         while True:
             c_iter += 1
 
             if not self.is_live:
-                print(c_iter)
                 if c_iter == self.d_index:
                     break
 
@@ -227,26 +255,82 @@ class trade_simulator():
             if trade_information['market_status'] != "TRADING":
                 continue
 
-            if trade_information['side'] == 'buy':
-                buy_results = TC.check_buy_condition(custom_conditional_data, trade_information, cInds, "PLACE_HOLDER", cCandles, "PLACE_HOLDER")
+            custom_conditional_data, trade_information = TC.other_conditions(custom_conditional_data, trade_information, self.orders, t_type, cCandles, cInds, "PLACE_HOLDER")
 
-                if buy_results:
-                    self.orders.append([cCandles[0][0], buy_results, 'buy'])
+            if trade_information['can_order']:
+                if trade_information['order_side'] == 'BUY':
+                    ## Buy sim
+                    if t_type == 'LONG':
+                        buy_results = TC.long_entry_conditions(custom_conditional_data, trade_information, cInds, "PLACE_HOLDER", cCandles, "PLACE_HOLDER")
+                    elif t_type == 'SHORT':
+                        buy_results = TC.short_entry_conditions(custom_conditional_data, trade_information, cInds, "PLACE_HOLDER", cCandles, "PLACE_HOLDER")
 
-                if len(self.orders) > 0:
-                    if self.orders[-1][2] == 'buy':
-                        print('buy')
-                        trade_information['side'] = 'sell'
+                    if buy_results:
+                        if buy_results['order_type'] != 'WAIT':
+                            price = cCandles[0][4] if not('price' in buy_results) else buy_results['price']
+                            self.orders.append([cCandles[0][0], price, buy_results['description'], 'BUY-{0}'.format(t_type)])
 
-            elif trade_information['side'] == 'sell':
-                sell_results = TC.check_sell_condition(custom_conditional_data, trade_information, cInds, "PLACE_HOLDER", cCandles, "PLACE_HOLDER")
+                    if len(self.orders) > 0:
+                        if self.orders[-1][3].split('-')[0] == 'BUY':
+                            print('BUY_DONE')
+                            trade_information['buy_price'] = price
+                            trade_information['order_side'] = 'SELL'
 
-                if sell_results:
-                    self.orders.append([cCandles[0][0], sell_results, 'sell'])
+                elif trade_information['order_side'] == 'SELL':
+                    ## Sell sim
+                    if t_type == 'LONG':
+                        sell_results = TC.long_exit_conditions(custom_conditional_data, trade_information, cInds, "PLACE_HOLDER", cCandles, "PLACE_HOLDER")
+                    elif t_type == 'SHORT':
+                        sell_results = TC.short_exit_conditions(custom_conditional_data, trade_information, cInds, "PLACE_HOLDER", cCandles, "PLACE_HOLDER")
 
-                if self.orders[-1][2] == 'sell':
-                    print('sell')
-                    trade_information['side'] = 'buy'
+                    if sell_results:
+                        if sell_results['order_type'] != 'WAIT':
+                            print(sell_results)
+                            price = cCandles[0][4] if not('price' in sell_results) else sell_results['price']
+                            self.orders.append([cCandles[0][0], price, sell_results['description'], 'SELL-{0}'.format(t_type)])
+
+                    if self.orders[-1][3].split('-')[0] == 'SELL':
+                        print('SELL_DONE')
+                        trade_information['buy_price'] = 0
+                        trade_information['order_side'] = 'BUY'
+
+        if params['ds'] != 'live':
+            if 'save' in params:
+                header = 'time,candle,'
+                indicators = self.indicators
+                orders = self.orders
+
+                orders.reverse()
+
+                for indicator in indicators:
+                    header+=str(indicator)+','
+                header += 'buyOrder,sellOrder'
+
+                save_data = [header.split(',')]
+                order_index = 0
+
+                for candle in self.candles:
+                    ctime = candle[0]
+                    data_line = [ctime, candle]
+                    for indicator in indicators:
+                        data_line.append(indicators[indicator][ctime])
+
+                    if order_index != len(orders):
+                        if orders[order_index][0] == candle[0]:
+                            if orders[order_index][3].split('-')[0] == 'BUY':
+                                data_line += [orders[order_index][1], 0]
+                            else:
+                                data_line += [0, orders[order_index][1]]
+                            order_index+=1
+                        else:
+                            data_line += [0, 0]
+                    save_data.append(data_line)
+
+                with open('trader.csv', 'w', newline='') as csvfile:
+                    csv_writer = csv.writer(csvfile, delimiter=',')
+                    for line in save_data:
+                        csv_writer.writerow(line)
+
 
         print('Runtime took: {0}'.format(time.time()-start_time))
 
@@ -272,7 +356,7 @@ class trade_simulator():
             cInds = self._build_empty_indicators(self.indicators)
 
             for ind_key in self.indicators.keys():
-                if ind_key in ['ema', 'sma']:
+                if ind_key in DOUBLE_DEPTH_INDICATORS:
                     for ma_type in cInds[ind_key]:
                         cInds[ind_key].update({ma_type:[self.indicators[ind_key][ma_type][key] for key in self.indicators[ind_key][ma_type] if key in self.indicators[ind_key][ma_type].keys()]})
                 else: 
@@ -285,7 +369,7 @@ class trade_simulator():
             cInds = self._build_empty_indicators(self.indicators)
 
             for ind_key in self.indicators.keys():
-                if ind_key in ['ema', 'sma']:
+                if ind_key in DOUBLE_DEPTH_INDICATORS:
                     for ma_type in cInds[ind_key]:
                         cInds[ind_key].update({ma_type:[self.indicators[ind_key][ma_type][key] for key in self.indicators[ind_key][ma_type] if key in time_range]})
                 else: 
@@ -337,12 +421,12 @@ if __name__ == '__main__':
             TS.setup(is_live, params['ds'], symbol=params['s'], interval=params['i'], limit=params['l'])
         else:
             TS.setup(is_live, params['ds'], limit=params['l'])
+
         TS.start()
         
-        SOCKET_IO.run(APP, 
+        '''SOCKET_IO.run(APP, 
             debug=True, 
-            use_reloader=False)
-
+            use_reloader=False)'''
 
     elif sys.argv[1].lower() == 'load':
         IS_READ = True
